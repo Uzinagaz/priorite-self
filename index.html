@@ -1,0 +1,1139 @@
+<!DOCTYPE html>
+<html lang="fr">
+
+<head>
+
+  <meta charset="UTF-8">
+
+  <meta
+    name="viewport"
+    content="width=device-width, initial-scale=1.0"
+  >
+
+  <title>Priorité Self</title>
+
+  <!-- Lecteur QR -->
+  <script
+    src="https://unpkg.com/html5-qrcode"
+    type="text/javascript">
+  </script>
+
+  <style>
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html,
+    body {
+      margin: 0;
+      padding: 0;
+      width: 100%;
+      min-height: 100%;
+      font-family:
+        Arial,
+        Helvetica,
+        sans-serif;
+      background: #111;
+      color: white;
+    }
+
+
+    /* ==============================
+       ÉCRAN SCANNER
+       ============================== */
+
+    #scannerPage {
+
+      min-height: 100vh;
+
+      display: flex;
+      flex-direction: column;
+
+      align-items: center;
+
+      background:
+        linear-gradient(
+          180deg,
+          #171717,
+          #050505
+        );
+
+    }
+
+
+    .entete {
+
+      width: 100%;
+
+      padding:
+        25px
+        20px
+        15px;
+
+      text-align: center;
+
+    }
+
+
+    .logo {
+
+      font-size: 15px;
+
+      font-weight: bold;
+
+      letter-spacing: 3px;
+
+      color: #aaa;
+
+    }
+
+
+    h1 {
+
+      margin:
+        10px
+        0
+        5px;
+
+      font-size: 30px;
+
+    }
+
+
+    .instruction {
+
+      margin: 0;
+
+      font-size: 17px;
+
+      color: #bbb;
+
+    }
+
+
+    /* ==============================
+       CAMÉRA
+       ============================== */
+
+    .camera-container {
+
+      width: 92%;
+
+      max-width: 500px;
+
+      margin-top: 20px;
+
+      padding: 8px;
+
+      background: white;
+
+      border-radius: 24px;
+
+      overflow: hidden;
+
+      box-shadow:
+        0 15px 40px
+        rgba(0, 0, 0, 0.5);
+
+    }
+
+
+    #reader {
+
+      width: 100%;
+
+      overflow: hidden;
+
+      border-radius: 17px;
+
+      color: black;
+
+    }
+
+
+    #reader video {
+
+      border-radius: 17px;
+
+    }
+
+
+    .etat {
+
+      margin-top: 25px;
+
+      font-size: 17px;
+
+      color: #aaa;
+
+    }
+
+
+    /* ==============================
+       RÉSULTAT
+       ============================== */
+
+    #resultat {
+
+      display: none;
+
+      position: fixed;
+
+      inset: 0;
+
+      z-index: 9999;
+
+      padding: 25px;
+
+      align-items: center;
+
+      justify-content: center;
+
+      flex-direction: column;
+
+      text-align: center;
+
+    }
+
+
+    #resultat.vert {
+
+      display: flex;
+
+      background:
+        linear-gradient(
+          180deg,
+          #20a653,
+          #087536
+        );
+
+    }
+
+
+    #resultat.rouge {
+
+      display: flex;
+
+      background:
+        linear-gradient(
+          180deg,
+          #e03b32,
+          #a81717
+        );
+
+    }
+
+
+    .resultat-carte {
+
+      width: 100%;
+
+      max-width: 520px;
+
+      padding:
+        30px
+        20px;
+
+    }
+
+
+    #symbole {
+
+      width: 170px;
+
+      height: 170px;
+
+      margin:
+        0
+        auto
+        25px;
+
+      border-radius: 50%;
+
+      display: flex;
+
+      align-items: center;
+
+      justify-content: center;
+
+      background:
+        rgba(
+          255,
+          255,
+          255,
+          0.20
+        );
+
+      border:
+        5px solid white;
+
+      font-size: 100px;
+
+      font-weight: bold;
+
+      line-height: 1;
+
+    }
+
+
+    #statut {
+
+      font-size: 38px;
+
+      font-weight: 900;
+
+      line-height: 1.05;
+
+      margin-bottom: 30px;
+
+    }
+
+
+    #nom {
+
+      font-size: 31px;
+
+      font-weight: bold;
+
+    }
+
+
+    #classe {
+
+      margin-top: 7px;
+
+      font-size: 21px;
+
+      opacity: 0.9;
+
+    }
+
+
+    #club {
+
+      margin-top: 30px;
+
+      font-size: 27px;
+
+      font-weight: bold;
+
+    }
+
+
+    #horaire {
+
+      margin-top: 10px;
+
+      font-size: 23px;
+
+    }
+
+
+    #controle {
+
+      margin-top: 30px;
+
+      font-size: 16px;
+
+      opacity: 0.8;
+
+    }
+
+
+    #boutonSuivant {
+
+      width: 100%;
+
+      max-width: 350px;
+
+      margin-top: 35px;
+
+      padding:
+        18px
+        20px;
+
+      border: 0;
+
+      border-radius: 16px;
+
+      background: white;
+
+      color: #111;
+
+      font-size: 20px;
+
+      font-weight: bold;
+
+      cursor: pointer;
+
+      box-shadow:
+        0 8px 25px
+        rgba(0, 0, 0, 0.20);
+
+    }
+
+
+    #boutonSuivant:active {
+
+      transform:
+        scale(0.97);
+
+    }
+
+
+    /* ==============================
+       CHARGEMENT
+       ============================== */
+
+    #chargement {
+
+      display: none;
+
+      position: fixed;
+
+      inset: 0;
+
+      z-index: 9000;
+
+      background:
+        rgba(
+          0,
+          0,
+          0,
+          0.85
+        );
+
+      align-items: center;
+
+      justify-content: center;
+
+      flex-direction: column;
+
+      font-size: 22px;
+
+      font-weight: bold;
+
+    }
+
+
+    #chargement.visible {
+
+      display: flex;
+
+    }
+
+
+    .spinner {
+
+      width: 60px;
+
+      height: 60px;
+
+      margin-bottom: 25px;
+
+      border:
+        7px solid
+        rgba(
+          255,
+          255,
+          255,
+          0.25
+        );
+
+      border-top-color:
+        white;
+
+      border-radius: 50%;
+
+      animation:
+        rotation
+        0.8s
+        linear
+        infinite;
+
+    }
+
+
+    @keyframes rotation {
+
+      to {
+
+        transform:
+          rotate(360deg);
+
+      }
+
+    }
+
+
+    /* ==============================
+       ERREUR
+       ============================== */
+
+    #erreur {
+
+      display: none;
+
+      width: 90%;
+
+      max-width: 500px;
+
+      margin: 20px auto;
+
+      padding: 15px;
+
+      background: #5c1717;
+
+      border-radius: 12px;
+
+      font-size: 15px;
+
+    }
+
+  </style>
+
+</head>
+
+
+<body>
+
+
+  <!-- ==============================
+       SCANNER
+       ============================== -->
+
+  <div id="scannerPage">
+
+
+    <div class="entete">
+
+      <div class="logo">
+        PRIORITÉ SELF
+      </div>
+
+      <h1>
+        📷 Scanner
+      </h1>
+
+      <p class="instruction">
+        Présentez le QR code de l'élève
+      </p>
+
+    </div>
+
+
+    <div class="camera-container">
+
+      <div id="reader"></div>
+
+    </div>
+
+
+    <div class="etat">
+
+      Scanner prêt
+
+    </div>
+
+
+    <div id="erreur"></div>
+
+
+  </div>
+
+
+
+  <!-- ==============================
+       CHARGEMENT
+       ============================== -->
+
+  <div id="chargement">
+
+    <div class="spinner"></div>
+
+    Vérification...
+
+  </div>
+
+
+
+  <!-- ==============================
+       RÉSULTAT
+       ============================== -->
+
+  <div id="resultat">
+
+
+    <div class="resultat-carte">
+
+
+      <div id="symbole">
+      </div>
+
+
+      <div id="statut">
+      </div>
+
+
+      <div id="nom">
+      </div>
+
+
+      <div id="classe">
+      </div>
+
+
+      <div id="club">
+      </div>
+
+
+      <div id="horaire">
+      </div>
+
+
+      <div id="controle">
+      </div>
+
+
+      <button
+        id="boutonSuivant"
+        onclick="scannerSuivant()"
+      >
+
+        📷 Scanner le suivant
+
+      </button>
+
+
+    </div>
+
+
+  </div>
+
+
+
+<script>
+
+
+/*******************************************************
+ * CONFIGURATION
+ *******************************************************/
+
+const API_URL =
+  "https://script.google.com/macros/s/AKfycbyqJNwQPv3fi45h6qHdzgPkrwI4rTmCAjGRm-M6n9oQkb-3p43Uwk02BRdF9P-9I1dC2A/exec";
+
+
+let bloque = false;
+
+
+
+/*******************************************************
+ * QR DÉTECTÉ
+ *******************************************************/
+
+function qrDetecte(
+  texte
+) {
+
+
+  if (bloque) {
+
+    return;
+
+  }
+
+
+  bloque = true;
+
+
+  let id = "";
+
+
+  /*****************************************************
+   * EXTRACTION DE L'ID
+   *****************************************************/
+
+  try {
+
+
+    const url =
+      new URL(
+        texte
+      );
+
+
+    id =
+      url.searchParams.get(
+        "id"
+      ) || "";
+
+
+  } catch (e) {
+
+
+    /*
+     * Si le QR contient uniquement
+     * l'identifiant.
+     */
+
+    id =
+      texte.trim();
+
+
+  }
+
+
+  if (!id) {
+
+
+    afficherErreur(
+      "QR code non reconnu."
+    );
+
+
+    bloque = false;
+
+
+    return;
+
+  }
+
+
+  verifierEleve(
+    id
+  );
+
+}
+
+
+
+/*******************************************************
+ * APPEL DE L'API
+ *******************************************************/
+
+async function verifierEleve(
+  id
+) {
+
+
+  afficherChargement(
+    true
+  );
+
+
+  try {
+
+
+    const url =
+
+      API_URL
+
+      +
+
+      "?api=1&id="
+
+      +
+
+      encodeURIComponent(
+        id
+      );
+
+
+    const reponse =
+      await fetch(
+        url
+      );
+
+
+    if (
+      !reponse.ok
+    ) {
+
+      throw new Error(
+        "Erreur serveur"
+      );
+
+    }
+
+
+    const resultat =
+      await reponse.json();
+
+
+    afficherChargement(
+      false
+    );
+
+
+    afficherResultat(
+      resultat
+    );
+
+
+  } catch (erreur) {
+
+
+    afficherChargement(
+      false
+    );
+
+
+    afficherErreur(
+
+      "Impossible de contacter le serveur."
+
+    );
+
+
+    console.error(
+      erreur
+    );
+
+
+    bloque = false;
+
+  }
+
+}
+
+
+
+/*******************************************************
+ * AFFICHAGE DU RÉSULTAT
+ *******************************************************/
+
+function afficherResultat(
+  r
+) {
+
+
+  const zone =
+    document.getElementById(
+      "resultat"
+    );
+
+
+  const symbole =
+    document.getElementById(
+      "symbole"
+    );
+
+
+  /*****************************************************
+   * VERT / ROUGE
+   *****************************************************/
+
+  if (
+    r.autorise
+  ) {
+
+
+    zone.className =
+      "vert";
+
+
+    symbole.textContent =
+      "✓";
+
+
+  } else {
+
+
+    zone.className =
+      "rouge";
+
+
+    symbole.textContent =
+      "✕";
+
+  }
+
+
+  /*****************************************************
+   * STATUT
+   *****************************************************/
+
+  document
+    .getElementById(
+      "statut"
+    )
+    .textContent =
+
+      r.titre || "";
+
+
+  /*****************************************************
+   * NOM
+   *****************************************************/
+
+  const nomComplet =
+
+    (
+      (r.prenom || "")
+      +
+      " "
+      +
+      (r.nom || "")
+    )
+    .trim();
+
+
+  document
+    .getElementById(
+      "nom"
+    )
+    .textContent =
+      nomComplet;
+
+
+  /*****************************************************
+   * CLASSE
+   *****************************************************/
+
+  document
+    .getElementById(
+      "classe"
+    )
+    .textContent =
+
+      r.classe || "";
+
+
+  /*****************************************************
+   * CLUB / MESSAGE
+   *****************************************************/
+
+  document
+    .getElementById(
+      "club"
+    )
+    .textContent =
+
+      r.autorise
+
+      ?
+
+      (
+        r.club || ""
+      )
+
+      :
+
+      (
+        r.message || ""
+      );
+
+
+  /*****************************************************
+   * HORAIRE
+   *****************************************************/
+
+  document
+    .getElementById(
+      "horaire"
+    )
+    .textContent =
+
+      r.autorise
+
+      ?
+
+      (
+        (r.debut || "")
+        +
+        " → "
+        +
+        (r.fin || "")
+      )
+
+      :
+
+      "";
+
+
+  /*****************************************************
+   * HEURE DU CONTRÔLE
+   *****************************************************/
+
+  document
+    .getElementById(
+      "controle"
+    )
+    .textContent =
+
+      "Contrôle : "
+
+      +
+
+      (r.jourControle || "")
+
+      +
+
+      " à "
+
+      +
+
+      (r.heureControle || "");
+
+}
+
+
+
+/*******************************************************
+ * SCANNER LE SUIVANT
+ *******************************************************/
+
+function scannerSuivant() {
+
+
+  const resultat =
+    document.getElementById(
+      "resultat"
+    );
+
+
+  resultat.className =
+    "";
+
+
+  bloque =
+    false;
+
+}
+
+
+
+/*******************************************************
+ * CHARGEMENT
+ *******************************************************/
+
+function afficherChargement(
+  visible
+) {
+
+
+  const chargement =
+    document.getElementById(
+      "chargement"
+    );
+
+
+  if (
+    visible
+  ) {
+
+
+    chargement.className =
+      "visible";
+
+
+  } else {
+
+
+    chargement.className =
+      "";
+
+  }
+
+}
+
+
+
+/*******************************************************
+ * ERREUR
+ *******************************************************/
+
+function afficherErreur(
+  message
+) {
+
+
+  const erreur =
+    document.getElementById(
+      "erreur"
+    );
+
+
+  erreur.style.display =
+    "block";
+
+
+  erreur.textContent =
+    message;
+
+
+  setTimeout(
+    function() {
+
+      erreur.style.display =
+        "none";
+
+    },
+    4000
+  );
+
+}
+
+
+
+/*******************************************************
+ * DÉMARRAGE DU SCANNER
+ *******************************************************/
+
+const scanner =
+  new Html5QrcodeScanner(
+
+    "reader",
+
+    {
+
+      fps:
+        10,
+
+      qrbox:
+        {
+          width:
+            250,
+
+          height:
+            250
+        },
+
+      rememberLastUsedCamera:
+        true,
+
+      supportedScanTypes:
+        [
+          Html5QrcodeScanType.SCAN_TYPE_CAMERA
+        ]
+
+    },
+
+    false
+
+  );
+
+
+scanner.render(
+
+  qrDetecte,
+
+  function() {
+
+    /*
+     * Les erreurs normales de lecture
+     * sont volontairement ignorées.
+     */
+
+  }
+
+);
+
+
+</script>
+
+
+</body>
+
+</html>
