@@ -1599,12 +1599,45 @@ async function demarrerScanner_(cameraId) {
   } catch (e) {
     scannerActif = false;
 
+    /*
+     * Au chargement mobile, une première tentative peut être interrompue
+     * pendant que le navigateur finalise l'autorisation / l'énumération
+     * des caméras. On ne montre donc pas une fausse alerte immédiatement.
+     */
     document.getElementById("etat").textContent =
-      "Caméra non disponible";
+      "Initialisation de la caméra...";
 
-    afficherErreur(
-      "Impossible de démarrer correctement la caméra. Vérifiez l’autorisation caméra puis rechargez la page."
-    );
+    setTimeout(async function() {
+      if (scannerActif || demarrageEnCours || document.hidden) return;
+
+      try {
+        await obtenirListeCamerasSansCouper_();
+        await demarrerScanner_(
+          localStorage.getItem(CLE_CAMERA) ||
+          choisirCameraArriere_()
+        );
+
+        /*
+         * L'erreur visible n'est affichée que si la seconde tentative
+         * échoue réellement.
+         */
+        if (!scannerActif) {
+          document.getElementById("etat").textContent =
+            "Caméra non disponible";
+
+          afficherErreur(
+            "Impossible de démarrer la caméra. Vérifiez l’autorisation caméra puis rechargez la page."
+          );
+        }
+      } catch (e2) {
+        document.getElementById("etat").textContent =
+          "Caméra non disponible";
+
+        afficherErreur(
+          "Impossible de démarrer la caméra. Vérifiez l’autorisation caméra puis rechargez la page."
+        );
+      }
+    }, 700);
   } finally {
     demarrageEnCours = false;
   }
