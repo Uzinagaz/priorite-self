@@ -1492,19 +1492,33 @@ async function demarrerScanner_(cameraId) {
      * Si le navigateur fournit des deviceId, on choisit précisément
      * l'objectif. Sinon on demande simplement la caméra arrière.
      */
+    /*
+     * IMPORTANT : quand un objectif précis est choisi, son deviceId doit
+     * être porté par UNE SEULE contrainte vidéo. La version précédente
+     * mélangeait le choix de caméra et videoConstraints ; sur certains
+     * mobiles html5-qrcode retombait alors systématiquement sur la caméra 1.
+     */
     const cameraConfig = id
-      ? { deviceId: { exact: id } }
-      : { facingMode: { ideal: "environment" } };
+      ? id
+      : { facingMode: "environment" };
+
+    const contraintesVideo = id
+      ? {
+          deviceId: { exact: id },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        }
+      : {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
+        };
 
     await lecteur.start(
       cameraConfig,
       {
         fps: 12,
 
-        /*
-         * Pas d'aspectRatio forcé : certains téléphones basculaient sur
-         * un mode vidéo médiocre en 1:1.
-         */
         qrbox: function(viewfinderWidth, viewfinderHeight) {
           const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
           const taille = Math.max(
@@ -1518,15 +1532,7 @@ async function demarrerScanner_(cameraId) {
           };
         },
 
-        /*
-         * On demande une image suffisamment détaillée pour les petits QR,
-         * tout en laissant le navigateur choisir la résolution réellement
-         * supportée par l'objectif.
-         */
-        videoConstraints: {
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
-        }
+        videoConstraints: contraintesVideo
       },
       qrDetecte,
       function() {}
@@ -1537,10 +1543,23 @@ async function demarrerScanner_(cameraId) {
     await appliquerReglagesCamera_();
 
     /*
-     * Maintenant que la caméra tourne, les libellés et objectifs sont
-     * souvent tous visibles. On rafraîchit donc la liste.
+     * Rafraîchit la liste après démarrage puis sélectionne explicitement
+     * l'objectif réellement actif.
      */
     await obtenirListeCamerasSansCouper_();
+
+    const videoActif = document.querySelector("#reader video");
+    if (videoActif && videoActif.srcObject) {
+      const tracksActifs = videoActif.srcObject.getVideoTracks();
+      if (tracksActifs.length && tracksActifs[0].getSettings) {
+        const actif = tracksActifs[0].getSettings().deviceId || "";
+        if (actif) {
+          cameraCourante = actif;
+          localStorage.setItem(CLE_CAMERA, actif);
+        }
+      }
+    }
+
     remplirListeCameras_();
 
     document.getElementById("etat").textContent =
