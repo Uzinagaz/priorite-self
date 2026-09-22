@@ -147,9 +147,10 @@
 
 
     #reader video {
-
+      width: 100% !important;
+      height: auto !important;
+      object-fit: cover;
       border-radius: 17px;
-
     }
 
 
@@ -1317,19 +1318,27 @@ function afficherErreur(
 
 
 /*******************************************************
- * SCANNER ROBUSTE + CAMÉRA MÉMORISÉE
+ * SCANNER MOBILE FIABLE
+ *
+ * Objectifs :
+ * - caméra arrière par défaut ;
+ * - liste réelle des objectifs après autorisation ;
+ * - mémorisation de l'objectif choisi ;
+ * - résolution élevée sans imposer un ratio carré ;
+ * - autofocus continu si le navigateur le permet ;
+ * - reprise après verrouillage / retour dans l'application.
  *******************************************************/
 
 let lecteurQR = null;
 let camerasDisponibles = [];
 let cameraCourante = "";
-let modeCamera = localStorage.getItem("prioriteSelfFacingMode") || "environment";
 let scannerActif = false;
-let redemarrageEnCours = false;
+let demarrageEnCours = false;
+let repriseTimer = null;
 let timerRecherche = null;
 let compteurRecherche = 0;
 
-const CLE_CAMERA = "prioriteSelfCameraId";
+const CLE_CAMERA = "prioriteSelfCameraIdV2";
 
 function creerLecteur_() {
   if (!lecteurQR) {
@@ -1338,76 +1347,185 @@ function creerLecteur_() {
   return lecteurQR;
 }
 
-async function chargerCameras_() {
+async function obtenirPermissionEtCameras_() {
+  /*
+   * Sur beaucoup de téléphones, enumerateDevices() masque les différents
+   * objectifs tant qu'une première autorisation caméra n'a pas été accordée.
+   */
   try {
-    camerasDisponibles = await Html5Qrcode.getCameras();
+    const permission = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: { ideal: "environment" } },
+      audio: false
+    });
+
+    permission.getTracks().forEach(function(track) {
+      track.stop();
+    });
+  } catch (e) {
+    // Html5Qrcode affichera ensuite l'erreur utile si l'accès est refusé.
+  }
+
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    camerasDisponibles = devices
+      .filter(function(device) {
+        return device.kind === "videoinput";
+      })
+      .map(function(device, index) {
+        return {
+          id: device.deviceId,
+          label: device.label || ("Caméra " + (index + 1))
+        };
+      });
   } catch (e) {
     camerasDisponibles = [];
   }
+
   return camerasDisponibles;
 }
 
-async function choisirCameraInitiale_() {
-  await chargerCameras_();
-
-  if (!camerasDisponibles.length) {
-    throw new Error("Aucune caméra disponible.");
-  }
-
+function choisirCameraArriere_() {
   const memorisee = localStorage.getItem(CLE_CAMERA) || "";
 
-  if (memorisee && camerasDisponibles.some(c => c.id === memorisee)) {
+  if (
+    memorisee &&
+    camerasDisponibles.some(function(c) {
+      return c.id === memorisee;
+    })
+  ) {
     return memorisee;
   }
 
-  const arriere = camerasDisponibles.find(function(c) {
-    return /back|rear|environment|arrière|dos/i.test(c.label || "");
+  const motsArriere =
+    /back|rear|environment|arrière|arriere|world|0\.5|1x|2x|3x/i;
+
+  const candidates = camerasDisponibles.filter(function(c) {
+    return motsArriere.test(c.label || "");
   });
 
-  return (arriere || camerasDisponibles[camerasDisponibles.length - 1]).id;
+  if (candidates.length) {
+    /*
+     * Le premier objectif arrière exposé est généralement le principal.
+     * Le bouton permet ensuite de parcourir tous les objectifs disponibles.
+     */
+    return candidates[0].id;
+  }
+
+  return camerasDisponibles.length
+    ? camerasDisponibles[camerasDisponibles.length - 1].id
+    : "";
+}
+
+async function appliquerReglagesCamera_() {
+  const video = document.querySelector("#reader video");
+
+  if (!video || !video.srcObject) return;
+
+  video.setAttribute("playsinline", "true");
+  video.setAttribute("autoplay", "true");
+
+  const tracks = video.srcObject.getVideoTracks();
+
+  if (!tracks.length) return;
+
+  const track = tracks[0];
+
+  try {
+    const settings = track.getSettings ? track.getSettings() : {};
+
+    if (settings.deviceId) {
+      cameraCourante = settings.deviceId;
+      localStorage.setItem(CLE_CAMERA, cameraCourante);
+    }
+  } catch (e) {}
+
+  /*
+   * Ne jamais imposer focusMode à un téléphone qui ne l'annonce pas.
+   * Quand "continuous" existe, on l'active explicitement.
+   */
+  try {
+    const caps = track.getCapabilities ? track.getCapabilities() : {};
+    const advanced = [];
+
+    if (
+      Array.isArray(caps.focusMode) &&
+      caps.focusMode.indexOf("continuous") !== -1
+    ) {
+      advanced.push({ focusMode: "continuous" });
+    }
+
+    if (caps.width && caps.width.max) {
+      advanced.push({ width: caps.width.max });
+    }
+
+    if (caps.height && caps.height.max) {
+      advanced.push({ height: caps.height.max });
+    }
+
+    if (advanced.length) {
+      for (const contrainte of advanced) {
+        try {
+          await track.applyConstraints({ advanced: [contrainte] });
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
 }
 
 async function demarrerScanner_(cameraId) {
-  if (redemarrageEnCours || scannerActif) return;
+  if (demarrageEnCours || scannerActif) return;
 
-  redemarrageEnCours = true;
+  demarrageEnCours = true;
 
   try {
     const lecteur = creerLecteur_();
 
+    if (!camerasDisponibles.length) {
+      await obtenirPermissionEtCameras_();
+    }
+
+    const id =
+      cameraId ||
+      choisirCameraArriere_();
+
     /*
-     * Sur mobile, facingMode est plus fiable qu'un deviceId pour
-     * sélectionner la caméra arrière, surtout au premier démarrage.
+     * Si le navigateur fournit des deviceId, on choisit précisément
+     * l'objectif. Sinon on demande simplement la caméra arrière.
      */
-    const cameraConfig = cameraId
-      ? { deviceId: { exact: cameraId } }
-      : { facingMode: modeCamera };
+    const cameraConfig = id
+      ? { deviceId: { exact: id } }
+      : { facingMode: { ideal: "environment" } };
 
     await lecteur.start(
       cameraConfig,
       {
-        fps: 15,
+        fps: 12,
 
         /*
-         * Zone plus large : le QR est détectable sans devoir le placer
-         * au millimètre près au centre de l'écran.
+         * Pas d'aspectRatio forcé : certains téléphones basculaient sur
+         * un mode vidéo médiocre en 1:1.
          */
         qrbox: function(viewfinderWidth, viewfinderHeight) {
-          const taille = Math.floor(
-            Math.min(viewfinderWidth, viewfinderHeight) * 0.78
+          const minEdge = Math.min(viewfinderWidth, viewfinderHeight);
+          const taille = Math.max(
+            220,
+            Math.floor(minEdge * 0.82)
           );
-          return { width: taille, height: taille };
+
+          return {
+            width: Math.min(taille, viewfinderWidth),
+            height: Math.min(taille, viewfinderHeight)
+          };
         },
 
-        aspectRatio: 1.0,
-
         /*
-         * Demande une mise au point continue aux navigateurs qui
-         * transmettent ces contraintes à la caméra.
+         * On demande une image suffisamment détaillée pour les petits QR,
+         * tout en laissant le navigateur choisir la résolution réellement
+         * supportée par l'objectif.
          */
         videoConstraints: {
-          facingMode: modeCamera,
-          focusMode: "continuous"
+          width: { ideal: 1920 },
+          height: { ideal: 1080 }
         }
       },
       qrDetecte,
@@ -1416,57 +1534,46 @@ async function demarrerScanner_(cameraId) {
 
     scannerActif = true;
 
+    await appliquerReglagesCamera_();
+
     /*
-     * Une fois l'autorisation caméra accordée, les navigateurs mobiles
-     * révèlent généralement la liste complète des caméras.
+     * Maintenant que la caméra tourne, les libellés et objectifs sont
+     * souvent tous visibles. On rafraîchit donc la liste.
      */
-    await chargerCameras_();
+    await obtenirListeCamerasSansCouper_();
 
-    const video = document.querySelector("#reader video");
+    document.getElementById("etat").textContent =
+      "Scanner prêt • " + camerasDisponibles.length + " caméra(s)";
 
-    if (video && video.srcObject) {
-      const pistes = video.srcObject.getVideoTracks();
-
-      if (pistes.length) {
-        const piste = pistes[0];
-        const settings = piste.getSettings ? piste.getSettings() : {};
-
-        if (settings.deviceId) {
-          cameraCourante = settings.deviceId;
-          localStorage.setItem(CLE_CAMERA, cameraCourante);
-        }
-
-        /*
-         * Autofocus continu, uniquement si le téléphone l'annonce
-         * comme capacité. On évite ainsi de casser les appareils qui
-         * ne prennent pas cette contrainte en charge.
-         */
-        try {
-          const caps = piste.getCapabilities ? piste.getCapabilities() : {};
-
-          if (
-            Array.isArray(caps.focusMode) &&
-            caps.focusMode.indexOf("continuous") !== -1
-          ) {
-            await piste.applyConstraints({
-              advanced: [{ focusMode: "continuous" }]
-            });
-          }
-        } catch (e) {}
-      }
-
-      video.setAttribute("playsinline", "true");
-    }
-
-    document.getElementById("etat").textContent = "Scanner prêt";
   } catch (e) {
     scannerActif = false;
+
+    document.getElementById("etat").textContent =
+      "Caméra non disponible";
+
     afficherErreur(
-      "Caméra indisponible. Touchez 🔄 ou vérifiez l’autorisation caméra."
+      "Impossible de démarrer correctement la caméra. Vérifiez l’autorisation caméra puis rechargez la page."
     );
   } finally {
-    redemarrageEnCours = false;
+    demarrageEnCours = false;
   }
+}
+
+async function obtenirListeCamerasSansCouper_() {
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+
+    camerasDisponibles = devices
+      .filter(function(device) {
+        return device.kind === "videoinput";
+      })
+      .map(function(device, index) {
+        return {
+          id: device.deviceId,
+          label: device.label || ("Caméra " + (index + 1))
+        };
+      });
+  } catch (e) {}
 }
 
 async function arreterScanner_() {
@@ -1480,67 +1587,86 @@ async function arreterScanner_() {
 }
 
 async function changerCamera_() {
-  if (redemarrageEnCours) return;
+  if (demarrageEnCours) return;
 
-  /*
-   * On inverse d'abord avant/arrière. C'est plus fiable sur téléphone
-   * que de dépendre uniquement de getCameras(), qui peut ne retourner
-   * qu'une caméra selon le navigateur.
-   */
-  modeCamera =
-    modeCamera === "environment"
-      ? "user"
-      : "environment";
+  await obtenirListeCamerasSansCouper_();
 
-  localStorage.setItem(
-    "prioriteSelfFacingMode",
-    modeCamera
-  );
+  if (camerasDisponibles.length < 2) {
+    /*
+     * Nouvelle tentative d'énumération avec permission explicite.
+     */
+    await arreterScanner_();
+    await obtenirPermissionEtCameras_();
 
-  await arreterScanner_();
-
-  /*
-   * Sans deviceId : on force le navigateur à choisir la caméra
-   * correspondant au nouveau facingMode.
-   */
-  cameraCourante = "";
-  localStorage.removeItem(CLE_CAMERA);
-
-  await demarrerScanner_("");
-}
-
-async function reprendreScanner_() {
-  if (document.hidden || bloque || redemarrageEnCours) return;
-
-  /*
-   * Après verrouillage, le navigateur peut conserver un objet scanner
-   * alors que le flux vidéo est mort. On arrête puis on relance proprement.
-   */
-  await arreterScanner_();
-
-  setTimeout(function() {
-    if (!document.hidden && !bloque) {
-      demarrerScanner_("");
+    if (camerasDisponibles.length < 2) {
+      await demarrerScanner_(choisirCameraArriere_());
+      afficherErreur(
+        "Le navigateur n’expose qu’une seule caméra sur cet appareil."
+      );
+      return;
     }
-  }, 250);
+  } else {
+    await arreterScanner_();
+  }
+
+  let index = camerasDisponibles.findIndex(function(c) {
+    return c.id === cameraCourante;
+  });
+
+  if (index < 0) index = 0;
+
+  const suivante =
+    camerasDisponibles[
+      (index + 1) % camerasDisponibles.length
+    ];
+
+  cameraCourante = suivante.id;
+  localStorage.setItem(CLE_CAMERA, cameraCourante);
+
+  await demarrerScanner_(cameraCourante);
+
+  document.getElementById("etat").textContent =
+    "Caméra : " + (suivante.label || "sélectionnée");
 }
 
-document.getElementById("boutonCamera")
+function programmerRepriseScanner_() {
+  clearTimeout(repriseTimer);
+
+  repriseTimer = setTimeout(async function() {
+    if (document.hidden || bloque || demarrageEnCours) return;
+
+    /*
+     * Après un verrouillage, le flux vidéo peut être présent en mémoire
+     * mais réellement suspendu. On le recrée proprement.
+     */
+    await arreterScanner_();
+
+    if (!document.hidden && !bloque) {
+      await obtenirListeCamerasSansCouper_();
+      await demarrerScanner_(
+        localStorage.getItem(CLE_CAMERA) || ""
+      );
+    }
+  }, 450);
+}
+
+document
+  .getElementById("boutonCamera")
   .addEventListener("click", changerCamera_);
 
 document.addEventListener("visibilitychange", function() {
   if (!document.hidden) {
-    reprendreScanner_();
+    programmerRepriseScanner_();
   }
 });
 
 window.addEventListener("pageshow", function() {
-  reprendreScanner_();
+  programmerRepriseScanner_();
 });
 
 window.addEventListener("focus", function() {
   if (!document.hidden && !scannerActif) {
-    reprendreScanner_();
+    programmerRepriseScanner_();
   }
 });
 
@@ -1649,7 +1775,10 @@ document.addEventListener("click", function(e) {
  * DÉMARRAGE
  *******************************************************/
 
-demarrerScanner_();
+(async function initialiserScanner_() {
+  await obtenirPermissionEtCameras_();
+  await demarrerScanner_(choisirCameraArriere_());
+})();
 
 </script>
 
