@@ -1323,6 +1323,7 @@ function afficherErreur(
 let lecteurQR = null;
 let camerasDisponibles = [];
 let cameraCourante = "";
+let modeCamera = localStorage.getItem("prioriteSelfFacingMode") || "environment";
 let scannerActif = false;
 let redemarrageEnCours = false;
 let timerRecherche = null;
@@ -1373,22 +1374,89 @@ async function demarrerScanner_(cameraId) {
 
   try {
     const lecteur = creerLecteur_();
-    const id = cameraId || await choisirCameraInitiale_();
+
+    /*
+     * Sur mobile, facingMode est plus fiable qu'un deviceId pour
+     * sélectionner la caméra arrière, surtout au premier démarrage.
+     */
+    const cameraConfig = cameraId
+      ? { deviceId: { exact: cameraId } }
+      : { facingMode: modeCamera };
 
     await lecteur.start(
-      id,
+      cameraConfig,
       {
-        fps: 10,
-        qrbox: { width: 250, height: 250 },
-        aspectRatio: 1.0
+        fps: 15,
+
+        /*
+         * Zone plus large : le QR est détectable sans devoir le placer
+         * au millimètre près au centre de l'écran.
+         */
+        qrbox: function(viewfinderWidth, viewfinderHeight) {
+          const taille = Math.floor(
+            Math.min(viewfinderWidth, viewfinderHeight) * 0.78
+          );
+          return { width: taille, height: taille };
+        },
+
+        aspectRatio: 1.0,
+
+        /*
+         * Demande une mise au point continue aux navigateurs qui
+         * transmettent ces contraintes à la caméra.
+         */
+        videoConstraints: {
+          facingMode: modeCamera,
+          focusMode: "continuous"
+        }
       },
       qrDetecte,
       function() {}
     );
 
     scannerActif = true;
-    cameraCourante = id;
-    localStorage.setItem(CLE_CAMERA, id);
+
+    /*
+     * Une fois l'autorisation caméra accordée, les navigateurs mobiles
+     * révèlent généralement la liste complète des caméras.
+     */
+    await chargerCameras_();
+
+    const video = document.querySelector("#reader video");
+
+    if (video && video.srcObject) {
+      const pistes = video.srcObject.getVideoTracks();
+
+      if (pistes.length) {
+        const piste = pistes[0];
+        const settings = piste.getSettings ? piste.getSettings() : {};
+
+        if (settings.deviceId) {
+          cameraCourante = settings.deviceId;
+          localStorage.setItem(CLE_CAMERA, cameraCourante);
+        }
+
+        /*
+         * Autofocus continu, uniquement si le téléphone l'annonce
+         * comme capacité. On évite ainsi de casser les appareils qui
+         * ne prennent pas cette contrainte en charge.
+         */
+        try {
+          const caps = piste.getCapabilities ? piste.getCapabilities() : {};
+
+          if (
+            Array.isArray(caps.focusMode) &&
+            caps.focusMode.indexOf("continuous") !== -1
+          ) {
+            await piste.applyConstraints({
+              advanced: [{ focusMode: "continuous" }]
+            });
+          }
+        } catch (e) {}
+      }
+
+      video.setAttribute("playsinline", "true");
+    }
 
     document.getElementById("etat").textContent = "Scanner prêt";
   } catch (e) {
@@ -1414,19 +1482,31 @@ async function arreterScanner_() {
 async function changerCamera_() {
   if (redemarrageEnCours) return;
 
-  await chargerCameras_();
+  /*
+   * On inverse d'abord avant/arrière. C'est plus fiable sur téléphone
+   * que de dépendre uniquement de getCameras(), qui peut ne retourner
+   * qu'une caméra selon le navigateur.
+   */
+  modeCamera =
+    modeCamera === "environment"
+      ? "user"
+      : "environment";
 
-  if (camerasDisponibles.length < 2) {
-    afficherErreur("Une seule caméra est disponible.");
-    return;
-  }
-
-  let index = camerasDisponibles.findIndex(c => c.id === cameraCourante);
-  index = (index + 1) % camerasDisponibles.length;
-  const suivante = camerasDisponibles[index].id;
+  localStorage.setItem(
+    "prioriteSelfFacingMode",
+    modeCamera
+  );
 
   await arreterScanner_();
-  await demarrerScanner_(suivante);
+
+  /*
+   * Sans deviceId : on force le navigateur à choisir la caméra
+   * correspondant au nouveau facingMode.
+   */
+  cameraCourante = "";
+  localStorage.removeItem(CLE_CAMERA);
+
+  await demarrerScanner_("");
 }
 
 async function reprendreScanner_() {
@@ -1440,7 +1520,7 @@ async function reprendreScanner_() {
 
   setTimeout(function() {
     if (!document.hidden && !bloque) {
-      demarrerScanner_(cameraCourante || localStorage.getItem(CLE_CAMERA) || "");
+      demarrerScanner_("");
     }
   }, 250);
 }
