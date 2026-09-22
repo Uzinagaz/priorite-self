@@ -570,7 +570,7 @@
     </div>
 
     <div class="scanner-tools">
-      <button id="boutonCamera" type="button" title="Changer de caméra">🔄</button>
+      <select id="choixCamera" title="Choisir la caméra"><option value="">📷 Caméra...</option></select>
       <div class="recherche-wrap">
         <input
           id="rechercheEleve"
@@ -1541,6 +1541,7 @@ async function demarrerScanner_(cameraId) {
      * souvent tous visibles. On rafraîchit donc la liste.
      */
     await obtenirListeCamerasSansCouper_();
+    remplirListeCameras_();
 
     document.getElementById("etat").textContent =
       "Scanner prêt • " + camerasDisponibles.length + " caméra(s)";
@@ -1574,6 +1575,8 @@ async function obtenirListeCamerasSansCouper_() {
         };
       });
   } catch (e) {}
+
+  remplirListeCameras_();
 }
 
 async function arreterScanner_() {
@@ -1586,47 +1589,46 @@ async function arreterScanner_() {
   scannerActif = false;
 }
 
-async function changerCamera_() {
-  if (demarrageEnCours) return;
+function remplirListeCameras_() {
+  const select = document.getElementById("choixCamera");
+  if (!select) return;
 
-  await obtenirListeCamerasSansCouper_();
+  const selection = cameraCourante || localStorage.getItem(CLE_CAMERA) || "";
 
-  if (camerasDisponibles.length < 2) {
-    /*
-     * Nouvelle tentative d'énumération avec permission explicite.
-     */
-    await arreterScanner_();
-    await obtenirPermissionEtCameras_();
+  select.innerHTML = "";
 
-    if (camerasDisponibles.length < 2) {
-      await demarrerScanner_(choisirCameraArriere_());
-      afficherErreur(
-        "Le navigateur n’expose qu’une seule caméra sur cet appareil."
-      );
-      return;
+  camerasDisponibles.forEach(function(camera, index) {
+    const option = document.createElement("option");
+    option.value = camera.id;
+    option.textContent = "📷 " + (camera.label || ("Caméra " + (index + 1)));
+
+    if (camera.id === selection) {
+      option.selected = true;
     }
-  } else {
-    await arreterScanner_();
-  }
 
-  let index = camerasDisponibles.findIndex(function(c) {
-    return c.id === cameraCourante;
+    select.appendChild(option);
   });
 
-  if (index < 0) index = 0;
+  if (!camerasDisponibles.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "Aucune caméra";
+    select.appendChild(option);
+  }
+}
 
-  const suivante =
-    camerasDisponibles[
-      (index + 1) % camerasDisponibles.length
-    ];
+async function choisirCameraDepuisListe_(event) {
+  const id = event.target.value;
 
-  cameraCourante = suivante.id;
-  localStorage.setItem(CLE_CAMERA, cameraCourante);
+  if (!id || id === cameraCourante || demarrageEnCours) return;
 
-  await demarrerScanner_(cameraCourante);
+  localStorage.setItem(CLE_CAMERA, id);
 
-  document.getElementById("etat").textContent =
-    "Caméra : " + (suivante.label || "sélectionnée");
+  await arreterScanner_();
+
+  cameraCourante = id;
+
+  await demarrerScanner_(id);
 }
 
 function programmerRepriseScanner_() {
@@ -1651,8 +1653,8 @@ function programmerRepriseScanner_() {
 }
 
 document
-  .getElementById("boutonCamera")
-  .addEventListener("click", changerCamera_);
+  .getElementById("choixCamera")
+  .addEventListener("change", choisirCameraDepuisListe_);
 
 document.addEventListener("visibilitychange", function() {
   if (!document.hidden) {
