@@ -1384,7 +1384,36 @@ async function obtenirPermissionEtCameras_() {
   return camerasDisponibles;
 }
 
+function scoreCameraQR_(camera) {
+  const label = String(camera.label || "").toLowerCase();
+  let score = 0;
+
+  // Écarte fortement la caméra avant.
+  if (/front|user|selfie|facetime|avant/i.test(label)) score -= 1000;
+
+  // Favorise une caméra arrière.
+  if (/back|rear|environment|arrière|arriere|dos/i.test(label)) score += 200;
+
+  // La caméra principale / grand-angle 1x est généralement idéale pour un QR.
+  if (/main|principal|primary|wide(?!.*ultra)|1x|camera 0\b|caméra 0\b/i.test(label)) {
+    score += 120;
+  }
+
+  // Macro : intéressante de près, mais pas le meilleur choix universel.
+  if (/macro/i.test(label)) score += 25;
+
+  // Ultra grand-angle et téléobjectifs sont moins adaptés par défaut.
+  if (/ultra|ultrawide|ultra wide|0[.,]5x|0[.,]6x/i.test(label)) score -= 80;
+  if (/tele|télé|telephoto|2x|3x|5x|10x/i.test(label)) score -= 60;
+
+  return score;
+}
+
 function choisirCameraArriere_() {
+  /*
+   * RÈGLE N°1 : si l'utilisateur a déjà choisi une caméra manuellement,
+   * on ne remet jamais en cause son choix.
+   */
   const memorisee = localStorage.getItem(CLE_CAMERA) || "";
 
   if (
@@ -1396,24 +1425,26 @@ function choisirCameraArriere_() {
     return memorisee;
   }
 
-  const motsArriere =
-    /back|rear|environment|arrière|arriere|world|0\.5|1x|2x|3x/i;
+  /*
+   * Premier lancement seulement : classement prudent à partir du nom
+   * réellement exposé par le téléphone. Aucun changement du moteur caméra.
+   */
+  if (!camerasDisponibles.length) return "";
 
-  const candidates = camerasDisponibles.filter(function(c) {
-    return motsArriere.test(c.label || "");
-  });
+  const classees = camerasDisponibles
+    .map(function(camera, index) {
+      return {
+        camera: camera,
+        index: index,
+        score: scoreCameraQR_(camera)
+      };
+    })
+    .sort(function(a, b) {
+      if (b.score !== a.score) return b.score - a.score;
+      return a.index - b.index;
+    });
 
-  if (candidates.length) {
-    /*
-     * Le premier objectif arrière exposé est généralement le principal.
-     * Le bouton permet ensuite de parcourir tous les objectifs disponibles.
-     */
-    return candidates[0].id;
-  }
-
-  return camerasDisponibles.length
-    ? camerasDisponibles[camerasDisponibles.length - 1].id
-    : "";
+  return classees[0].camera.id;
 }
 
 async function appliquerReglagesCamera_() {
