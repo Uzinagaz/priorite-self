@@ -473,6 +473,63 @@
 
     }
 
+
+    /* ========================================
+       OUTILS SCANNER
+       ======================================== */
+    .scanner-tools {
+      width: 92%;
+      max-width: 500px;
+      margin-top: 14px;
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+    #boutonCamera {
+      flex: 0 0 58px;
+      height: 48px;
+      border: 0;
+      border-radius: 14px;
+      font-size: 24px;
+      cursor: pointer;
+      background: #fff;
+      color: #111;
+    }
+    .recherche-wrap {
+      position: relative;
+      flex: 1;
+    }
+    #rechercheEleve {
+      width: 100%;
+      height: 48px;
+      border: 0;
+      border-radius: 14px;
+      padding: 0 14px;
+      font-size: 16px;
+      outline: none;
+    }
+    #resultatsRecherche {
+      display: none;
+      position: absolute;
+      z-index: 8000;
+      top: 54px;
+      left: 0;
+      right: 0;
+      max-height: 260px;
+      overflow-y: auto;
+      background: white;
+      color: #111;
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,.35);
+    }
+    .resultat-eleve {
+      padding: 12px;
+      border-bottom: 1px solid #ddd;
+      cursor: pointer;
+    }
+    .resultat-eleve:last-child { border-bottom: 0; }
+    .resultat-eleve:active { background: #eee; }
+
   </style>
 
 </head>
@@ -509,6 +566,19 @@
 
       <div id="reader"></div>
 
+    </div>
+
+    <div class="scanner-tools">
+      <button id="boutonCamera" type="button" title="Changer de caméra">🔄</button>
+      <div class="recherche-wrap">
+        <input
+          id="rechercheEleve"
+          type="search"
+          placeholder="🔎 Élève sans carte..."
+          autocomplete="off"
+        >
+        <div id="resultatsRecherche"></div>
+      </div>
     </div>
 
 
@@ -1247,60 +1317,259 @@ function afficherErreur(
 
 
 /*******************************************************
- * DÉMARRAGE DU SCANNER
+ * SCANNER ROBUSTE + CAMÉRA MÉMORISÉE
  *******************************************************/
 
-const scanner =
-  new Html5QrcodeScanner(
+let lecteurQR = null;
+let camerasDisponibles = [];
+let cameraCourante = "";
+let scannerActif = false;
+let redemarrageEnCours = false;
+let timerRecherche = null;
+let compteurRecherche = 0;
 
-    "reader",
+const CLE_CAMERA = "prioriteSelfCameraId";
 
-    {
+function creerLecteur_() {
+  if (!lecteurQR) {
+    lecteurQR = new Html5Qrcode("reader");
+  }
+  return lecteurQR;
+}
 
-      fps:
-        10,
+async function chargerCameras_() {
+  try {
+    camerasDisponibles = await Html5Qrcode.getCameras();
+  } catch (e) {
+    camerasDisponibles = [];
+  }
+  return camerasDisponibles;
+}
 
-      qrbox:
-        {
-          width:
-            250,
+async function choisirCameraInitiale_() {
+  await chargerCameras_();
 
-          height:
-            250
-        },
-
-      rememberLastUsedCamera:
-        true,
-
-      supportedScanTypes:
-        [
-          Html5QrcodeScanType
-            .SCAN_TYPE_CAMERA
-        ]
-
-    },
-
-    false
-
-  );
-
-
-
-scanner.render(
-
-  qrDetecte,
-
-  function() {
-
-    /*
-     * Les échecs de lecture image par image
-     * sont normaux et sont ignorés.
-     */
-
+  if (!camerasDisponibles.length) {
+    throw new Error("Aucune caméra disponible.");
   }
 
-);
+  const memorisee = localStorage.getItem(CLE_CAMERA) || "";
 
+  if (memorisee && camerasDisponibles.some(c => c.id === memorisee)) {
+    return memorisee;
+  }
+
+  const arriere = camerasDisponibles.find(function(c) {
+    return /back|rear|environment|arrière|dos/i.test(c.label || "");
+  });
+
+  return (arriere || camerasDisponibles[camerasDisponibles.length - 1]).id;
+}
+
+async function demarrerScanner_(cameraId) {
+  if (redemarrageEnCours || scannerActif) return;
+
+  redemarrageEnCours = true;
+
+  try {
+    const lecteur = creerLecteur_();
+    const id = cameraId || await choisirCameraInitiale_();
+
+    await lecteur.start(
+      id,
+      {
+        fps: 10,
+        qrbox: { width: 250, height: 250 },
+        aspectRatio: 1.0
+      },
+      qrDetecte,
+      function() {}
+    );
+
+    scannerActif = true;
+    cameraCourante = id;
+    localStorage.setItem(CLE_CAMERA, id);
+
+    document.getElementById("etat").textContent = "Scanner prêt";
+  } catch (e) {
+    scannerActif = false;
+    afficherErreur(
+      "Caméra indisponible. Touchez 🔄 ou vérifiez l’autorisation caméra."
+    );
+  } finally {
+    redemarrageEnCours = false;
+  }
+}
+
+async function arreterScanner_() {
+  if (!lecteurQR || !scannerActif) return;
+
+  try {
+    await lecteurQR.stop();
+  } catch (e) {}
+
+  scannerActif = false;
+}
+
+async function changerCamera_() {
+  if (redemarrageEnCours) return;
+
+  await chargerCameras_();
+
+  if (camerasDisponibles.length < 2) {
+    afficherErreur("Une seule caméra est disponible.");
+    return;
+  }
+
+  let index = camerasDisponibles.findIndex(c => c.id === cameraCourante);
+  index = (index + 1) % camerasDisponibles.length;
+  const suivante = camerasDisponibles[index].id;
+
+  await arreterScanner_();
+  await demarrerScanner_(suivante);
+}
+
+async function reprendreScanner_() {
+  if (document.hidden || bloque || redemarrageEnCours) return;
+
+  /*
+   * Après verrouillage, le navigateur peut conserver un objet scanner
+   * alors que le flux vidéo est mort. On arrête puis on relance proprement.
+   */
+  await arreterScanner_();
+
+  setTimeout(function() {
+    if (!document.hidden && !bloque) {
+      demarrerScanner_(cameraCourante || localStorage.getItem(CLE_CAMERA) || "");
+    }
+  }, 250);
+}
+
+document.getElementById("boutonCamera")
+  .addEventListener("click", changerCamera_);
+
+document.addEventListener("visibilitychange", function() {
+  if (!document.hidden) {
+    reprendreScanner_();
+  }
+});
+
+window.addEventListener("pageshow", function() {
+  reprendreScanner_();
+});
+
+window.addEventListener("focus", function() {
+  if (!document.hidden && !scannerActif) {
+    reprendreScanner_();
+  }
+});
+
+
+/*******************************************************
+ * RECHERCHE D'UN ÉLÈVE SANS CARTE
+ *******************************************************/
+
+function rechercherEleves_(texte) {
+  const q = String(texte || "").trim();
+  const zone = document.getElementById("resultatsRecherche");
+
+  if (q.length < 2) {
+    zone.style.display = "none";
+    zone.innerHTML = "";
+    return;
+  }
+
+  compteurRecherche++;
+  const callbackName = "prioriteSelfRecherche_" + compteurRecherche;
+  const script = document.createElement("script");
+
+  window[callbackName] = function(resultats) {
+    nettoyerJSONP(script, callbackName);
+    afficherResultatsRecherche_(Array.isArray(resultats) ? resultats : []);
+  };
+
+  script.onerror = function() {
+    nettoyerJSONP(script, callbackName);
+    zone.style.display = "none";
+  };
+
+  script.src =
+    API_URL +
+    "?api=1" +
+    "&recherche=" + encodeURIComponent(q) +
+    "&callback=" + encodeURIComponent(callbackName) +
+    "&t=" + Date.now();
+
+  document.body.appendChild(script);
+}
+
+function afficherResultatsRecherche_(resultats) {
+  const zone = document.getElementById("resultatsRecherche");
+
+  if (!resultats.length) {
+    zone.innerHTML =
+      '<div class="resultat-eleve">Aucun élève trouvé</div>';
+    zone.style.display = "block";
+    return;
+  }
+
+  zone.innerHTML = resultats.map(function(e, i) {
+    return (
+      '<div class="resultat-eleve" data-index="' + i + '">' +
+      '<strong>' + echapperRecherche_(e.prenom + " " + e.nom) + '</strong>' +
+      ' • ' + echapperRecherche_(e.classe || "") +
+      '</div>'
+    );
+  }).join("");
+
+  zone.querySelectorAll(".resultat-eleve[data-index]").forEach(function(el) {
+    el.addEventListener("click", function() {
+      const e = resultats[Number(el.dataset.index)];
+      if (!e) return;
+
+      zone.style.display = "none";
+      document.getElementById("rechercheEleve").value = "";
+      bloque = true;
+      verifierEleve(e.id);
+    });
+  });
+
+  zone.style.display = "block";
+}
+
+function echapperRecherche_(texte) {
+  return String(texte || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+document.getElementById("rechercheEleve")
+  .addEventListener("input", function() {
+    const valeur = this.value;
+
+    clearTimeout(timerRecherche);
+    timerRecherche = setTimeout(function() {
+      rechercherEleves_(valeur);
+    }, 250);
+  });
+
+document.addEventListener("click", function(e) {
+  const zone = document.getElementById("resultatsRecherche");
+  const champ = document.getElementById("rechercheEleve");
+
+  if (e.target !== champ && !zone.contains(e.target)) {
+    zone.style.display = "none";
+  }
+});
+
+
+/*******************************************************
+ * DÉMARRAGE
+ *******************************************************/
+
+demarrerScanner_();
 
 </script>
 
