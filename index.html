@@ -694,10 +694,12 @@ let compteurJSONP =
  *******************************************************/
 
 const DB_NOM = "prioriteSelfScannerOffline";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const SYNC_INTERVALLE = 10 * 60 * 1000;
 let syncEnCours = false;
 let snapshotLocal = null;
+let envoiPassagesEnCours = false;
+let passagesEnAttente = 0;
 
 function ouvrirBaseLocale_() {
   return new Promise(function(resolve, reject) {
@@ -710,6 +712,9 @@ function ouvrirBaseLocale_() {
       const db = demande.result;
       if (!db.objectStoreNames.contains("snapshots")) {
         db.createObjectStore("snapshots");
+      }
+      if (!db.objectStoreNames.contains("passages")) {
+        db.createObjectStore("passages", {keyPath: "cle"});
       }
     };
     demande.onsuccess = function() { resolve(demande.result); };
@@ -764,7 +769,105 @@ function rafraichirEtatSync_(detail) {
     ? "Base locale : " + Object.keys(snapshotLocal.eleves).length +
       " élèves · dernière synchro : " + dateSyncLisible_(snapshotLocal)
     : "Base locale indisponible";
-  afficherEtatSync_(reseau + " · " + base + (detail ? " · " + detail : ""));
+  const attente = passagesEnAttente
+    ? " · " + passagesEnAttente + " passage(s) à transmettre" : "";
+  afficherEtatSync_(reseau + " · " + base + attente + (detail ? " · " + detail : ""));
+}
+
+async function lirePassages_() {
+  const db = await ouvrirBaseLocale_();
+  try {
+    return await new Promise(function(resolve, reject) {
+      const t = db.transaction("passages", "readonly");
+      const r = t.objectStore("passages").getAll();
+      r.onsuccess = function() { resolve(r.result || []); };
+      r.onerror = function() { reject(r.error); };
+    });
+  } finally { db.close(); }
+}
+async function modifierPassage_(passage, suppression) {
+  const db = await ouvrirBaseLocale_();
+  try {
+    await new Promise(function(resolve, reject) {
+      const t = db.transaction("passages", "readwrite");
+      const store = t.objectStore("passages");
+      if (suppression) store.delete(passage.cle);
+      else store.put(passage);
+      t.oncomplete = resolve;
+      t.onerror = function() { reject(t.error); };
+      t.onabort = function() { reject(t.error); };
+    });
+  } finally { db.close(); }
+}
+function nouvelleClePassage_() {
+  return crypto.randomUUID
+    ? crypto.randomUUID()
+    : Array.from(crypto.getRandomValues(new Uint8Array(16)),
+        b => b.toString(16).padStart(2, '0')).join('');
+}
+async function memoriserPassage_(id, resultat, cle) {
+  if (!resultat.prenom && !resultat.nom && !resultat.classe) return;
+  cle = cle || nouvelleClePassage_();
+  await modifierPassage_({
+    cle, id, controleLe: new Date().toISOString(),
+    resultat: {
+      titre: resultat.titre, autorise: resultat.autorise,
+      prenom: resultat.prenom, nom: resultat.nom, classe: resultat.classe,
+      club: resultat.club || '', exceptionnelle: !!resultat.exceptionnelle,
+      enRetard: !!resultat.enRetard, superPrio: !!resultat.superPrio
+    }
+  }, false);
+  passagesEnAttente++;
+  rafraichirEtatSync_();
+  if (navigator.onLine) envoyerPassages_();
+}
+function envoyerPassageJSONP_(passage) {
+  return new Promise(function(resolve, reject) {
+    const nom = "prioriteSelfPassage_" + Date.now() + "_" +
+      Math.random().toString(36).slice(2);
+    const script = document.createElement("script");
+    let fini = false;
+    const timer = setTimeout(function() { terminer(new Error("Délai dépassé")); }, 20000);
+    function terminer(erreur, reponse) {
+      if (fini) return;
+      fini = true;
+      clearTimeout(timer);
+      script.remove();
+      if (erreur) {
+        window[nom] = function() { delete window[nom]; };
+        reject(erreur);
+      } else {
+        delete window[nom];
+        resolve(reponse);
+      }
+    }
+    window[nom] = function(reponse) { terminer(null, reponse); };
+    script.onerror = function() { terminer(new Error("Connexion indisponible")); };
+    script.src = API_URL + "?api=1&passageDiffere=1" +
+      "&donnees=" + encodeURIComponent(JSON.stringify(passage)) +
+      "&callback=" + encodeURIComponent(nom);
+    document.body.appendChild(script);
+  });
+}
+async function envoyerPassages_() {
+  if (envoiPassagesEnCours || !navigator.onLine) return;
+  envoiPassagesEnCours = true;
+  try {
+    const passages = await lirePassages_();
+    passagesEnAttente = passages.length;
+    rafraichirEtatSync_();
+    for (const passage of passages) {
+      const reponse = await envoyerPassageJSONP_(passage);
+      if (!reponse || reponse.ok !== true || reponse.cle !== passage.cle)
+        throw new Error("Passage non confirmé par le serveur");
+      await modifierPassage_(passage, true);
+      passagesEnAttente--;
+      rafraichirEtatSync_();
+    }
+  } catch (erreur) {
+    console.warn("Passages différés PRIOSELF :", erreur);
+    rafraichirEtatSync_("historique en attente");
+  } finally { envoiPassagesEnCours = false; }
 }
 
 function demanderSnapshot_() {
@@ -839,14 +942,20 @@ async function synchroniserSnapshot_() {
 async function initialiserBaseLocale_() {
   try {
     snapshotLocal = await lireSnapshotLocal_();
+    passagesEnAttente = (await lirePassages_()).length;
     rafraichirEtatSync_();
   } catch (erreur) {
     console.warn("Base locale PRIOSELF :", erreur);
     rafraichirEtatSync_("stockage local indisponible");
   }
   synchroniserSnapshot_();
+  envoyerPassages_();
   setInterval(synchroniserSnapshot_, SYNC_INTERVALLE);
-  window.addEventListener("online", synchroniserSnapshot_);
+  setInterval(envoyerPassages_, SYNC_INTERVALLE);
+  window.addEventListener("online", function() {
+    synchroniserSnapshot_();
+    envoyerPassages_();
+  });
   window.addEventListener("offline", function() { rafraichirEtatSync_(); });
 }
 
@@ -1044,7 +1153,7 @@ function dateLocale_(texte) {
   const m = String(texte || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   return m ? Date.UTC(+m[3], +m[2] - 1, +m[1]) : NaN;
 }
-function afficherResultatLocal_(id) {
+function afficherResultatLocal_(id, cle) {
   const r = resultatLocal_(id);
   if (!r) {
     afficherErreur('Base locale absente ou semaine non synchronisée. Reconnectez-vous.');
@@ -1053,13 +1162,18 @@ function afficherResultatLocal_(id) {
   }
   afficherResultat(r);
   document.getElementById('controle').textContent += ' · HORS LIGNE';
+  memoriserPassage_(id, r, cle).catch(function(erreur) {
+    console.error("Historique local PRIOSELF :", erreur);
+    rafraichirEtatSync_("passage non enregistré localement");
+  });
 }
 
 function verifierEleve(
   id
 ) {
+  const clePassage = nouvelleClePassage_();
   if (!navigator.onLine) {
-    afficherResultatLocal_(id);
+    afficherResultatLocal_(id, clePassage);
     return;
   }
 
@@ -1144,7 +1258,7 @@ function verifierEleve(
       );
 
 
-      afficherResultatLocal_(id);
+      afficherResultatLocal_(id, clePassage);
 
     };
 
@@ -1175,6 +1289,12 @@ function verifierEleve(
     encodeURIComponent(
       id
     )
+
+    +
+    "&clePassage="
+
+    +
+    encodeURIComponent(clePassage)
 
     +
 
@@ -1216,7 +1336,7 @@ function verifierEleve(
         );
 
 
-        afficherResultatLocal_(id);
+        afficherResultatLocal_(id, clePassage);
 
 
       },
