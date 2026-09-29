@@ -531,6 +531,14 @@
     .resultat-eleve:last-child { border-bottom: 0; }
     .resultat-eleve:active { background: #eee; }
 
+    .etat-sync {
+      margin: 12px auto 0;
+      max-width: 420px;
+      text-align: center;
+      font-size: 0.82rem;
+      line-height: 1.4;
+      opacity: 0.85;
+    }
   </style>
 
 </head>
@@ -591,6 +599,8 @@
 
 
     <div id="erreur"></div>
+
+    <div id="etatSync" class="etat-sync" role="status" aria-live="polite">Base locale : vérification...</div>
 
 
   </div>
@@ -678,6 +688,169 @@ let compteurJSONP =
   0;
 
 
+
+/*******************************************************
+ * SNAPSHOT LOCAL (étape 1 : contrôle toujours en ligne)
+ *******************************************************/
+
+const DB_NOM = "prioriteSelfScannerOffline";
+const DB_VERSION = 1;
+const SYNC_INTERVALLE = 10 * 60 * 1000;
+let syncEnCours = false;
+let snapshotLocal = null;
+
+function ouvrirBaseLocale_() {
+  return new Promise(function(resolve, reject) {
+    if (!window.indexedDB) {
+      reject(new Error("IndexedDB indisponible"));
+      return;
+    }
+    const demande = indexedDB.open(DB_NOM, DB_VERSION);
+    demande.onupgradeneeded = function() {
+      const db = demande.result;
+      if (!db.objectStoreNames.contains("snapshots")) {
+        db.createObjectStore("snapshots");
+      }
+    };
+    demande.onsuccess = function() { resolve(demande.result); };
+    demande.onerror = function() { reject(demande.error); };
+  });
+}
+
+async function lireSnapshotLocal_() {
+  const db = await ouvrirBaseLocale_();
+  try {
+    return await new Promise(function(resolve, reject) {
+      const transaction = db.transaction("snapshots", "readonly");
+      const demande = transaction.objectStore("snapshots").get("courant");
+      demande.onsuccess = function() { resolve(demande.result || null); };
+      demande.onerror = function() { reject(demande.error); };
+    });
+  } finally {
+    db.close();
+  }
+}
+
+async function enregistrerSnapshotLocal_(snapshot) {
+  const db = await ouvrirBaseLocale_();
+  try {
+    await new Promise(function(resolve, reject) {
+      const transaction = db.transaction("snapshots", "readwrite");
+      transaction.objectStore("snapshots").put(snapshot, "courant");
+      transaction.oncomplete = resolve;
+      transaction.onerror = function() { reject(transaction.error); };
+      transaction.onabort = function() { reject(transaction.error); };
+    });
+  } finally {
+    db.close();
+  }
+}
+
+function afficherEtatSync_(message) {
+  document.getElementById("etatSync").textContent = message;
+}
+
+function dateSyncLisible_(snapshot) {
+  if (!snapshot || !snapshot.enregistreLe) return "jamais";
+  return new Date(snapshot.enregistreLe).toLocaleString("fr-FR", {
+    timeZone: "Europe/Paris", day: "2-digit", month: "2-digit",
+    hour: "2-digit", minute: "2-digit"
+  });
+}
+
+function rafraichirEtatSync_(detail) {
+  const reseau = navigator.onLine ? "🟢 En ligne" : "🟠 Hors connexion";
+  const base = snapshotLocal
+    ? "Base locale : " + Object.keys(snapshotLocal.eleves).length +
+      " élèves · dernière synchro : " + dateSyncLisible_(snapshotLocal)
+    : "Base locale indisponible";
+  afficherEtatSync_(reseau + " · " + base + (detail ? " · " + detail : ""));
+}
+
+function demanderSnapshot_() {
+  return new Promise(function(resolve, reject) {
+    const nom = "prioriteSelfSync_" + Date.now() + "_" +
+      Math.random().toString(36).slice(2);
+    const script = document.createElement("script");
+    let termine = false;
+    const minuterie = setTimeout(function() {
+      terminer(new Error("Délai de synchronisation dépassé"));
+    }, 20000);
+
+    function terminer(erreur, donnees) {
+      if (termine) return;
+      termine = true;
+      clearTimeout(minuterie);
+      script.remove();
+      // Garder un rappel inoffensif si une réponse JSONP arrive en retard.
+      if (erreur) {
+        window[nom] = function() { delete window[nom]; };
+        reject(erreur);
+      } else {
+        delete window[nom];
+        resolve(donnees);
+      }
+    }
+
+    window[nom] = function(donnees) { terminer(null, donnees); };
+    script.onerror = function() { terminer(new Error("Réseau indisponible")); };
+    script.src = API_URL + "?api=1&sync=1&callback=" +
+      encodeURIComponent(nom) + "&t=" + Date.now();
+    document.body.appendChild(script);
+  });
+}
+
+async function synchroniserSnapshot_() {
+  if (syncEnCours || !navigator.onLine) {
+    rafraichirEtatSync_();
+    return;
+  }
+  syncEnCours = true;
+  rafraichirEtatSync_("synchronisation...");
+  try {
+    const reponse = await demanderSnapshot_();
+    if (!reponse || reponse.ok !== true ||
+        !reponse.eleves || typeof reponse.eleves !== "object" ||
+        !reponse.priorites || typeof reponse.priorites !== "object" ||
+        !reponse.exceptions || typeof reponse.exceptions !== "object" ||
+        !reponse.synchroniseLe || !reponse.semaineActuelle) {
+      throw new Error("Snapshot incomplet");
+    }
+    const snapshot = {
+      version: reponse.version,
+      synchroniseLe: reponse.synchroniseLe,
+      semaineActuelle: reponse.semaineActuelle,
+      eleves: reponse.eleves,
+      priorites: reponse.priorites,
+      exceptions: reponse.exceptions,
+      enregistreLe: new Date().toISOString()
+    };
+    await enregistrerSnapshotLocal_(snapshot);
+    snapshotLocal = snapshot;
+    rafraichirEtatSync_();
+  } catch (erreur) {
+    console.warn("Synchronisation PRIOSELF :", erreur);
+    rafraichirEtatSync_("synchro échouée");
+  } finally {
+    syncEnCours = false;
+  }
+}
+
+async function initialiserBaseLocale_() {
+  try {
+    snapshotLocal = await lireSnapshotLocal_();
+    rafraichirEtatSync_();
+  } catch (erreur) {
+    console.warn("Base locale PRIOSELF :", erreur);
+    rafraichirEtatSync_("stockage local indisponible");
+  }
+  synchroniserSnapshot_();
+  setInterval(synchroniserSnapshot_, SYNC_INTERVALLE);
+  window.addEventListener("online", synchroniserSnapshot_);
+  window.addEventListener("offline", function() { rafraichirEtatSync_(); });
+}
+
+initialiserBaseLocale_();
 
 /*******************************************************
  * QR DÉTECTÉ
