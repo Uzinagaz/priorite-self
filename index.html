@@ -1947,6 +1947,26 @@ function rechercherEleves_(texte) {
     return;
   }
 
+  if (snapshotLocal && snapshotLocal.eleves) {
+    const mots = q.toLocaleLowerCase("fr").normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "").split(/\s+/).filter(Boolean);
+    const resultats = Object.keys(snapshotLocal.eleves).map(function(id) {
+      return Object.assign({ id: id }, snapshotLocal.eleves[id]);
+    }).filter(function(e) {
+      if (!e.actif) return false;
+      const contenu = [e.prenom, e.nom, e.classe].join(" ")
+        .toLocaleLowerCase("fr").normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "");
+      return mots.every(function(mot) { return contenu.includes(mot); });
+    }).sort(function(a, b) {
+      return (a.nom + " " + a.prenom).localeCompare(
+        b.nom + " " + b.prenom, "fr"
+      );
+    }).slice(0, 20);
+    afficherResultatsRecherche_(resultats);
+    return;
+  }
+
   compteurRecherche++;
   const callbackName = "prioriteSelfRecherche_" + compteurRecherche;
   const script = document.createElement("script");
