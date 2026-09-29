@@ -690,7 +690,7 @@ let compteurJSONP =
 
 
 /*******************************************************
- * SNAPSHOT LOCAL (étape 1 : contrôle toujours en ligne)
+ * SNAPSHOT LOCAL
  *******************************************************/
 
 const DB_NOM = "prioriteSelfScannerOffline";
@@ -957,9 +957,111 @@ function qrDetecte(
  * entre GitHub Pages et Apps Script.
  *******************************************************/
 
+function resultatLocal_(id) {
+  const s = snapshotLocal;
+  if (!s || !s.eleves || !s.priorites || !s.exceptions) return null;
+  const parts = Object.fromEntries(new Intl.DateTimeFormat('fr-FR', {
+    timeZone: 'Europe/Paris', year: 'numeric', month: '2-digit',
+    day: '2-digit', weekday: 'long', hour: '2-digit', minute: '2-digit',
+    hourCycle: 'h23'
+  }).formatToParts(new Date()).filter(p => p.type !== 'literal')
+    .map(p => [p.type, p.value]));
+  const jour = parts.weekday[0].toUpperCase() + parts.weekday.slice(1);
+  const jours = ['Dimanche','Lundi','Mardi','Mercredi','Jeudi','Vendredi','Samedi'];
+  const date = Date.UTC(+parts.year, +parts.month - 1, +parts.day);
+  const lundi = date - ((jours.indexOf(jour) + 6) % 7) * 86400000;
+  const synchro = new Date(s.enregistreLe);
+  if (isNaN(synchro.getTime())) return null;
+  const sp = Object.fromEntries(new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'Europe/Paris', year:'numeric', month:'2-digit', day:'2-digit'
+  }).formatToParts(synchro).filter(p => p.type !== 'literal')
+    .map(p => [p.type, p.value]));
+  const sd = Date.UTC(+sp.year, +sp.month - 1, +sp.day);
+  const sl = sd - ((new Date(sd).getUTCDay() + 6) % 7) * 86400000;
+  if (lundi !== sl || !['A','B'].includes(s.semaineActuelle)) return null;
+  const semaine = s.semaineActuelle;
+  const heure = parts.hour + ':' + parts.minute;
+  const hm = minutesLocal_(heure);
+  const e = s.eleves[id];
+  const commun = {jourControle:jour, heureControle:heure, semaineControle:semaine};
+  const personne = e ? {prenom:e.prenom, nom:e.nom, classe:e.classe, groupes:e.groupes} : {};
+  const res = (autorise, titre, message, details) =>
+    Object.assign({}, commun, personne, {autorise, titre, message}, details || {});
+  if (!e) return res(false, 'CARTE INCONNUE', 'Cet identifiant n’existe pas dans la base.');
+  if (!e.actif) return res(false, 'NON PRIORITAIRE', 'Carte actuellement désactivée.');
+  let exRetard = null;
+  for (const x of s.exceptions[id] || []) {
+    const d = dateLocale_(x.dateDebut), f = dateLocale_(x.dateFin);
+    const joursEx = x.jours || 'Tous les jours', semaineEx = x.semaine || 'Toutes';
+    if (!x.actif || !(date >= d && date <= f) ||
+        !(joursEx === 'Tous les jours' || joursEx.split('|').some(j => j.trim() === jour)) ||
+        !(semaineEx === 'Toutes' || semaineEx === 'A+B' || semaineEx === semaine)) continue;
+    const debut = minutesLocal_(x.debut), fin = minutesLocal_(x.fin);
+    const details = {exceptionnelle:true, club:x.activite, debut:x.debut, fin:x.fin,
+      dateDebutPriorite:x.dateDebut, dateFinPriorite:x.dateFin, semainePriorite:'EXCEPTION'};
+    if (debut >= 0 && fin >= 0 && hm >= debut && hm <= fin)
+      return res(true, 'PRIORITÉ EXCEPTIONNELLE', x.activite,
+        Object.assign({superPrio:fin - debut <= 30}, details));
+    const retard = hm - fin;
+    if (fin >= 0 && retard >= 1 && retard <= 30 &&
+        (!exRetard || retard < exRetard.retard)) exRetard = {x, retard, details};
+  }
+  if (exRetard) return res(true,
+    'PRIORITÉ EXCEPTIONNELLE • EN RETARD DE ' + exRetard.retard + ' MIN',
+    exRetard.x.activite, Object.assign({enRetard:true,
+      retardMinutes:exRetard.retard}, exRetard.details));
+  const priorites = s.priorites[id] || [];
+  let desactivee = null;
+  for (const p of priorites) {
+    if (!(p.semaine === 'A+B' || p.semaine === semaine) || p.jour !== jour) continue;
+    const debut = minutesLocal_(p.debut), fin = minutesLocal_(p.fin);
+    if (debut < 0 || fin < 0 || hm < debut || hm > fin) continue;
+    if (!p.actif) { if (!desactivee) desactivee = p; continue; }
+    const superPrio = fin - debut <= 30;
+    return res(true, superPrio ? 'SUPER PRIO' : 'ACCÈS PRIORITAIRE', p.club,
+      {superPrio, club:p.club, debut:p.debut, fin:p.fin, semainePriorite:p.semaine});
+  }
+  let retard = null;
+  for (const p of priorites) {
+    if (!p.actif || !(p.semaine === 'A+B' || p.semaine === semaine) || p.jour !== jour) continue;
+    const fin = minutesLocal_(p.fin), n = hm - fin;
+    if (fin >= 0 && n >= 1 && n <= 30 && (!retard || n < retard.n)) retard = {p,n};
+  }
+  if (retard) return res(true, 'PRIORITAIRE • EN RETARD DE ' + retard.n + ' MIN',
+    retard.p.club, {enRetard:true, retardMinutes:retard.n, club:retard.p.club,
+      debut:retard.p.debut, fin:retard.p.fin, semainePriorite:retard.p.semaine});
+  if (desactivee) return res(false, 'PRIORITÉ DÉSACTIVÉE', desactivee.club,
+    {club:desactivee.club, debut:desactivee.debut, fin:desactivee.fin,
+      semainePriorite:desactivee.semaine});
+  return res(false, 'NON PRIORITAIRE', 'Aucune priorité à cet horaire.');
+}
+
+function minutesLocal_(texte) {
+  const m = String(texte || '').match(/^(\d{1,2}):(\d{2})$/);
+  return m && +m[1] < 24 && +m[2] < 60 ? +m[1] * 60 + +m[2] : -1;
+}
+function dateLocale_(texte) {
+  const m = String(texte || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  return m ? Date.UTC(+m[3], +m[2] - 1, +m[1]) : NaN;
+}
+function afficherResultatLocal_(id) {
+  const r = resultatLocal_(id);
+  if (!r) {
+    afficherErreur('Base locale absente ou semaine non synchronisée. Reconnectez-vous.');
+    bloque = false;
+    return;
+  }
+  afficherResultat(r);
+  document.getElementById('controle').textContent += ' · HORS LIGNE';
+}
+
 function verifierEleve(
   id
 ) {
+  if (!navigator.onLine) {
+    afficherResultatLocal_(id);
+    return;
+  }
 
 
   afficherChargement(
@@ -1042,13 +1144,7 @@ function verifierEleve(
       );
 
 
-      afficherErreur(
-        "Impossible de contacter le serveur."
-      );
-
-
-      bloque =
-        false;
+      afficherResultatLocal_(id);
 
     };
 
@@ -1120,13 +1216,7 @@ function verifierEleve(
         );
 
 
-        afficherErreur(
-          "Le serveur met trop de temps à répondre."
-        );
-
-
-        bloque =
-          false;
+        afficherResultatLocal_(id);
 
 
       },
