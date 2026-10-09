@@ -311,6 +311,8 @@
     }
 
 
+    #resultat.orange { display:flex; background:linear-gradient(180deg,#ed941d,#a95808); }
+
     #resultat.rouge {
 
       display: flex;
@@ -814,7 +816,7 @@ async function memoriserPassage_(id, resultat, cle) {
       titre: resultat.titre, autorise: resultat.autorise,
       prenom: resultat.prenom, nom: resultat.nom, classe: resultat.classe,
       club: resultat.club || '', exceptionnelle: !!resultat.exceptionnelle,
-      enRetard: !!resultat.enRetard, superPrio: !!resultat.superPrio
+      anticipe: !!resultat.anticipe, enRetard: !!resultat.enRetard, superPrio: !!resultat.superPrio
     }
   }, false);
   passagesEnAttente++;
@@ -1139,6 +1141,27 @@ function resultatLocal_(id) {
   if (retard) return res(true, 'PRIORITAIRE • EN RETARD DE ' + retard.n + ' MIN',
     retard.p.club, {enRetard:true, retardMinutes:retard.n, club:retard.p.club,
       debut:retard.p.debut, fin:retard.p.fin, semainePriorite:retard.p.semaine});
+  let prochain = null;
+  function retenirAnticipation(p, exceptionnelle) {
+    const debut = minutesLocal_(p.debut), fin = minutesLocal_(p.fin);
+    if (debut < 0 || fin < debut || hm >= debut) return;
+    if (!prochain || debut < prochain.minutes) prochain = {minutes:debut,
+      anticipe:true, exceptionnelle, club:exceptionnelle ? p.activite : p.club,
+      debut:p.debut, fin:p.fin, semainePriorite:exceptionnelle ? 'EXCEPTION' : p.semaine,
+      dateDebutPriorite:exceptionnelle ? p.dateDebut : '',
+      dateFinPriorite:exceptionnelle ? p.dateFin : ''};
+  }
+  for (const p of priorites) {
+    if (p.actif && (p.semaine === 'A+B' || p.semaine === semaine) && p.jour === jour) retenirAnticipation(p, false);
+  }
+  for (const p of s.exceptions[id] || []) {
+    const d = dateLocale_(p.dateDebut), f = dateLocale_(p.dateFin);
+    const joursEx = p.jours || 'Tous les jours', semaineEx = p.semaine || 'Toutes';
+    if (p.actif && date >= d && date <= f &&
+        (joursEx === 'Tous les jours' || joursEx.split('|').some(j => j.trim() === jour)) &&
+        (semaineEx === 'Toutes' || semaineEx === 'A+B' || semaineEx === semaine)) retenirAnticipation(p, true);
+  }
+  if (prochain) { delete prochain.minutes; return res(true, 'PASSAGE ANTICIPÉ', 'Passage autorisé avant le créneau prévu.', prochain); }
   if (desactivee) return res(false, 'PRIORITÉ DÉSACTIVÉE', desactivee.club,
     {club:desactivee.club, debut:desactivee.debut, fin:desactivee.fin,
       semainePriorite:desactivee.semaine});
@@ -1435,9 +1458,10 @@ function afficherResultat(
    * VERT
    *****************************************************/
 
-  if (
-    r.autorise
-  ) {
+  if (r.anticipe || r.titre === 'PASSAGE ANTICIPÉ') {
+    zone.className = 'orange';
+    symbole.textContent = '✓';
+  } else if (r.autorise) {
 
 
     zone.className =
@@ -1563,7 +1587,7 @@ function afficherResultat(
       ?
 
       (
-        (r.debut || "")
+        (r.anticipe ? "Créneau prévu : " : "") + (r.debut || "")
         +
         " → "
         +
