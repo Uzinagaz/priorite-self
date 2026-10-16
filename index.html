@@ -697,7 +697,7 @@ let compteurJSONP =
 
 const DB_NOM = "prioriteSelfScannerOffline";
 const DB_VERSION = 2;
-const SYNC_INTERVALLE = 10 * 60 * 1000;
+const SYNC_INTERVALLE = 2 * 60 * 1000;
 let syncEnCours = false;
 let snapshotLocal = null;
 let envoiPassagesEnCours = false;
@@ -773,7 +773,7 @@ function rafraichirEtatSync_(detail) {
     : "Base locale indisponible";
   const attente = passagesEnAttente
     ? " · " + passagesEnAttente + " passage(s) à transmettre" : "";
-  afficherEtatSync_(reseau + " · " + base + attente + (detail ? " · " + detail : ""));
+  afficherEtatSync_("⚡ Scanner local prioritaire · " + reseau + " · " + base + attente + (detail ? " · " + detail : ""));
 }
 
 async function lirePassages_() {
@@ -1176,15 +1176,16 @@ function dateLocale_(texte) {
   const m = String(texte || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
   return m ? Date.UTC(+m[3], +m[2] - 1, +m[1]) : NaN;
 }
-function afficherResultatLocal_(id, cle) {
-  const r = resultatLocal_(id);
+function afficherResultatLocal_(id, cle, resultatDejaCalcule) {
+  const r = resultatDejaCalcule || resultatLocal_(id);
   if (!r) {
     afficherErreur('Base locale absente ou semaine non synchronisée. Reconnectez-vous.');
     bloque = false;
     return;
   }
   afficherResultat(r);
-  document.getElementById('controle').textContent += ' · HORS LIGNE';
+  document.getElementById('controle').textContent += navigator.onLine
+    ? ' · CONTRÔLE LOCAL' : ' · CONTRÔLE LOCAL — HORS LIGNE';
   memoriserPassage_(id, r, cle).catch(function(erreur) {
     console.error("Historique local PRIOSELF :", erreur);
     rafraichirEtatSync_("passage non enregistré localement");
@@ -1195,12 +1196,21 @@ function verifierEleve(
   id
 ) {
   const clePassage = nouvelleClePassage_();
+  // Toujours décider sur le téléphone si sa base est valable cette semaine.
+  // Aucun appel serveur ni délai réseau dans ce chemin de contrôle.
+  const resultatImmediat = resultatLocal_(id);
+  if (resultatImmediat) {
+    afficherResultatLocal_(id, clePassage, resultatImmediat);
+    return;
+  }
   if (!navigator.onLine) {
     afficherResultatLocal_(id, clePassage);
     return;
   }
 
 
+  rafraichirEtatSync_('base locale absente ou semaine à resynchroniser · vérification serveur');
+  synchroniserSnapshot_();
   afficherChargement(
     true
   );
